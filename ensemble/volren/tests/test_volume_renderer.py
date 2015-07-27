@@ -1,4 +1,7 @@
+import contextlib
+import gc
 import unittest
+import weakref
 
 import numpy as np
 
@@ -16,6 +19,18 @@ AXES_ACTOR_CLASS = tvtk.CubeAxesActor
 CUT_PLANE_ACTOR_CLASS = tvtk.ImagePlaneWidget
 CLIP_BOUNDS = [0, CLIP_MAX/2, 0, CLIP_MAX/2, 0, CLIP_MAX/2]
 
+
+@contextlib.contextmanager
+def restore_gc_state():
+    """Ensure that gc state is restored on exit of the with statement."""
+    originally_enabled = gc.isenabled()
+    try:
+        yield
+    finally:
+        if originally_enabled:
+            gc.enable()
+        else:
+            gc.disable()
 
 def count_types(type_class, obj_list):
     return sum(int(isinstance(obj, type_class)) for obj in obj_list)
@@ -81,6 +96,37 @@ enamldef MainView(Container): view:
         image_array = self.viewer.screenshot()
         self.assertTrue(image_array.ndim == 3)
         self.assertTrue(image_array.shape[-1] == 3)
+
+    def test_viewer_garbage_collected(self):
+        # given
+        viewer_collected = []
+        viewer_weakref = None
+
+        def viewer_collected_callback(weakref):
+            viewer_collected.append(True)
+
+        def do():
+            volume = np.random.normal(size=(32, 32, 32))
+            volume = (255*(volume-volume.min())/volume.ptp()).astype(np.uint8)
+            volume_data = VolumeData(raw_data=volume)
+            volume_axes = VolumeAxes(visible_axis_scales=(True, True, True))
+            volume_bbox = VolumeBoundingBox()
+            volume_cut_planes = VolumeCutPlanes()
+            scene_members = {'axes': volume_axes, 'bbox': volume_bbox,
+                             'cut_planes': volume_cut_planes}
+            viewer = VolumeViewer(volume_data=volume_data,
+                                  scene_members=scene_members,
+                                  clip_bounds=CLIP_BOUNDS)
+            reference = weakref.ref(viewer, viewer_collected_callback)
+            return reference
+
+        # when
+        with restore_gc_state():
+            gc.disable()
+            viewer_weakref = do()
+
+        self.assertTrue(viewer_collected[0])
+        self.assertIsNone(viewer_weakref())
 
 if __name__ == "__main__":
     unittest.main()
